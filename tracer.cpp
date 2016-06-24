@@ -98,7 +98,7 @@ private:
     pid_t dummyPid;
 
     void tracerProcess() {
-#ifdef _CLEAR_SCR
+#ifdef CLEAR_SCR
             std::system("clear");
 #endif
 
