@@ -15,6 +15,8 @@
 #include <mach-o/getsect.h>
 #endif
 
+#define CLEAR_SCR
+
 typedef uint64_t addr;
 
 void panic(std::string msg);
@@ -98,10 +100,6 @@ private:
     pid_t dummyPid;
 
     void tracerProcess() {
-#ifdef CLEAR_SCR
-            std::system("clear");
-#endif
-
 #ifndef __APPLE__
         //first make sure that ASLR is turned off - otherwise /proc/<pid>/maps won't make sense!!!
         std::ifstream aslrSetting;
@@ -132,6 +130,10 @@ private:
 
         while (1)
         {
+#ifdef CLEAR_SCR
+            std::system("clear");
+#endif
+
             log("Dummy PID: " + std::to_string(dummyPid) + "\n");
 
             //wreck
