@@ -153,7 +153,7 @@ private:
             usleep(msWait * 1000);
 
 #ifdef _CLEAR_SCR
-            // std::system("clear");
+            std::system("clear");
 #endif
         }
 
