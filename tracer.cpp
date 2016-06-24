@@ -54,20 +54,20 @@ private:
                     std::stringstream ss;
                     int firstHyphen = line.find('-');
                     ss << std::hex << line.substr(0, firstHyphen + 1);
-                    ss >> md.stackTop;
+                    ss >> md.stackBot;
                     ss.str("");
                     ss << std::hex << line.substr(firstHyphen + 1, line.find(' ') - firstHyphen);
-                    ss >> md.stackBot;
+                    ss >> md.stackTop;
                 }
                 else if (line.find("[heap]") != std::string::npos) //parse heap top and bottom
                 {
                     std::stringstream ss;
                     int firstHyphen = line.find('-');
                     ss << std::hex << line.substr(0, firstHyphen + 1);
-                    ss >> md.heapTop;
+                    ss >> md.heapBot;
                     ss.str("");
                     ss << std::hex << line.substr(firstHyphen + 1, line.find(' ') - firstHyphen);
-                    ss >> md.heapBot;
+                    ss >> md.heapTop;
                 }
                 else if (line.find("r-xp") != std::string::npos && line.find("dummy") != std::string::npos)
                 {
