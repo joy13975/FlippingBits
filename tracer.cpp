@@ -98,8 +98,12 @@ private:
     pid_t dummyPid;
 
     void tracerProcess() {
-        //first make sure that ASLR is turned off - otherwise /proc/<pid>/maps won't make sense!!!
+#ifdef _CLEAR_SCR
+            std::system("clear");
+#endif
+
 #ifndef __APPLE__
+        //first make sure that ASLR is turned off - otherwise /proc/<pid>/maps won't make sense!!!
         std::ifstream aslrSetting;
         std::string aslrSettingPath = "/proc/sys/kernel/randomize_va_space";
         aslrSetting.open(aslrSettingPath);
@@ -151,10 +155,6 @@ private:
             }
 
             usleep(msWait * 1000);
-
-#ifdef _CLEAR_SCR
-            std::system("clear");
-#endif
         }
 
         waitpid(dummyPid, 0, 0); // wait for child to exit
