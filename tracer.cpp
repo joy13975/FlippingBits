@@ -11,6 +11,8 @@
 
 #ifndef __APPLE__
 #include <sys/ptrace.h> // for ptrace
+#else
+#include <mach-o/getsect.h>
 #endif
 
 typedef uint64_t addr;
@@ -20,7 +22,12 @@ void log(std::string msg);
 std::string addrToHex(addr a);
 
 const std::string tracerHdr = "[Tracer]: ";
+
+#ifndef __APPLE__
 extern const char etext, edata, end;
+#else
+extern const char etext = get_etext(), edata = get_edata(), end = get_end();
+#endif
 
 class memMap
 {
@@ -126,16 +133,16 @@ private:
             //wreck
 
 
-            //trace stuff
-            // memMap mm(dummyPid);
-            // log("Stack Top: 0x" + addrToHex(mm.maps.stackTop) + "\n");
-            // log("Stack Bot: 0x" + addrToHex(mm.maps.stackBot) + "\n");
-            // log("Heap Top: 0x" + addrToHex(mm.maps.heapTop) + "\n");
-            // log("Heap Bot: 0x" + addrToHex(mm.maps.heapBot) + "\n");
-            // log("uData Top: 0x" + addrToHex(mm.uDataTop) + "\n");
-            // log("iData Top: 0x" + addrToHex(mm.iDataTop) + "\n");
-            // log("Text Top: 0x" + addrToHex(mm.textTop) + "\n");
-            // log("Text Bot: 0x" + addrToHex(mm.maps.textBot) + "\n");
+            // trace stuff
+            memMap mm(dummyPid);
+            log("Stack Top: 0x" + addrToHex(mm.maps.stackTop) + "\n");
+            log("Stack Bot: 0x" + addrToHex(mm.maps.stackBot) + "\n");
+            log("Heap Top: 0x" + addrToHex(mm.maps.heapTop) + "\n");
+            log("Heap Bot: 0x" + addrToHex(mm.maps.heapBot) + "\n");
+            log("uData Top: 0x" + addrToHex(mm.uDataTop) + "\n");
+            log("iData Top: 0x" + addrToHex(mm.iDataTop) + "\n");
+            log("Text Top: 0x" + addrToHex(mm.textTop) + "\n");
+            log("Text Bot: 0x" + addrToHex(mm.maps.textBot) + "\n");
 
             if (waitpid(dummyPid, 0, WNOHANG))
             {
