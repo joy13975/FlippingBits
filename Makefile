@@ -1,4 +1,4 @@
-CXX=c++
+CXX=mcxx
 EXTENSION=.exe
 DUMMY_PROG=dummy
 TRACER_PROG=tracer
@@ -15,12 +15,12 @@ rd: d
 	./$(DUMMY_PROG)$(EXTENSION)
 
 $(TRACER_PROG)$(EXTENSION): $(DUMMY_PROG)$(EXTENSION) $(TRACER_PROG).cpp
-	$(CXX) $(CXXFLAGS) $(TRACER_PROG).cpp -o $(TRACER_PROG)$(EXTENSION) $(LDFLAGS) $(DEFS)
+	c++ $(CXXFLAGS) $(TRACER_PROG).cpp -o $(TRACER_PROG)$(EXTENSION) $(LDFLAGS) $(DEFS)
 
 t: $(TRACER_PROG)$(EXTENSION)
 
 rt: t
-	./$(TRACER_PROG)$(EXTENSION)
+	./$(TRACER_PROG)$(EXTENSION) dummy.exe
 
 clean:
-	rm -rf *.o *$(EXTENSION)
+	rm -rf *.o *$(EXTENSION) *.dSYM

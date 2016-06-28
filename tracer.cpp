@@ -8,186 +8,264 @@
 #include <cstring> //for strcmp
 #include <stdlib.h> //stdtoull for uint64_t parsing
 #include <sstream> //stringstream
-
-#ifndef __APPLE__
-#include <sys/ptrace.h> // for ptrace
-#else
-#include <mach-o/getsect.h>
-#endif
-
-#define CLEAR_SCR
+#include <sys/ptrace.h> //for ptrace
+#include <sys/reg.h> //for ORIG_RAX
+#include <memory> //for shared_ptr
+#include <regex> //for regex_replace
+#include <sys/stat.h> //for stat
 
 typedef uint64_t addr;
 
-void panic(std::string msg);
-void log(std::string msg);
-std::string addrToHex(addr a);
+void panic(const std::string &msg);
+void log(const std::string &msg);
+std::string longToHex(const addr &a);
+bool fileExists(const std::string &file);
+void clrscr();
 
 const std::string tracerHdr = "[Tracer]: ";
-
-#ifndef __APPLE__
-extern const char etext, edata, end;
-#else
-extern const char etext = get_etext(), edata = get_edata(), end = get_end();
-#endif
 
 class memMap
 {
 private:
-    struct mapsData { addr stackTop, stackBot, heapTop, heapBot, textBot;};
-    static mapsData getMaps(pid_t dummyPid)
+    void parseRange(std::string line, addr &bot, addr &top)
     {
-        mapsData md;
+        std::stringstream ss;
+        int firstHyphen = line.find('-');
+        ss << std::hex << line.substr(0, firstHyphen + 1);
+        ss >> bot;
+        ss.str("");
+        ss << std::hex << line.substr(firstHyphen + 1, line.find(' ') - firstHyphen);
+        ss >> top;
+    }
 
-        std::ifstream dummyMemMaps;
-        std::string dummyMemMapsPath = "/proc/" + std::to_string(dummyPid) + "/maps";
+public:
+    addr stackTop = 0, stackBot = 0, heapTop = 0, heapBot = 0, textTop = 0, textBot = 0;
+    int uDataSize = 0, iDataSize = 0, textSize = 0;
+
+    memMap(pid_t traceePid, std::string traceePath) {
+        std::ifstream traceeMemMaps;
+        std::string traceeMemMapsPath = "/proc/" + std::to_string(traceePid) + "/maps";
         char * pEnd;
 
-        //read dummy's memory map
-        dummyMemMaps.open(dummyMemMapsPath);
-        if (dummyMemMaps.is_open())
+        //read tracee's memory map
+        traceeMemMaps.open(traceeMemMapsPath);
+        if (traceeMemMaps.is_open())
         {
             std::string line;
-            while (!dummyMemMaps.eof())
+            while (!traceeMemMaps.eof())
             {
-                getline(dummyMemMaps, line);
+                getline(traceeMemMaps, line);
                 if (line.find("[stack]") != std::string::npos) //parse stack top and bottom
                 {
-                    std::stringstream ss;
-                    int firstHyphen = line.find('-');
-                    ss << std::hex << line.substr(0, firstHyphen + 1);
-                    ss >> md.stackBot;
-                    ss.str("");
-                    ss << std::hex << line.substr(firstHyphen + 1, line.find(' ') - firstHyphen);
-                    ss >> md.stackTop;
+                    parseRange(line, stackBot, stackTop);
                 }
                 else if (line.find("[heap]") != std::string::npos) //parse heap top and bottom
                 {
-                    std::stringstream ss;
-                    int firstHyphen = line.find('-');
-                    ss << std::hex << line.substr(0, firstHyphen + 1);
-                    ss >> md.heapBot;
-                    ss.str("");
-                    ss << std::hex << line.substr(firstHyphen + 1, line.find(' ') - firstHyphen);
-                    ss >> md.heapTop;
+                    parseRange(line, heapBot, heapTop);
                 }
-                else if (line.find("r-xp") != std::string::npos && line.find("dummy") != std::string::npos)
+                else if (line.find("r-xp") != std::string::npos && line.find(traceePath) != std::string::npos)
                 {
-                    std::stringstream ss;
-                    int firstHyphen = line.find('-');
-                    ss << std::hex << line.substr(0, firstHyphen + 1);
-                    ss >> md.textBot;
+                    parseRange(line, textBot, textTop);
                 }
             }
         }
         else
         {
-            panic("Could not open " + dummyMemMapsPath + "!\n");
+            panic("Could not open " + traceeMemMapsPath + "!\n");
         }
-        dummyMemMaps.close();
 
-        return md;
+        traceeMemMaps.close();
+
+        //get data segment sizes
+        const char* sizeCmd = ("size " + traceePath).c_str();
+        std::shared_ptr<FILE> pipe(popen(sizeCmd, "r"), pclose);
+
+        if (pipe)
+        {
+            const int buffSz = 512;
+            char buffer[buffSz];
+            std::string result;
+            while (!feof(pipe.get()))
+                if (fgets(buffer, buffSz, pipe.get()) != NULL)
+                    result += buffer;
+
+            result = std::regex_replace(result, std::regex("[^0-9 ]+"), std::string(""));
+
+            std::stringstream ss(result);
+
+            ss >> textSize;
+            ss >> iDataSize;
+            ss >> uDataSize;
+        }
+        else
+        {
+            panic("Could not open pipe to " + std::string(sizeCmd) + "!\n");
+        }
     }
-public:
-    const mapsData maps;
-    const addr uDataTop = (addr) &end, iDataTop = (addr) &edata, textTop = (addr) &etext;
-    memMap(pid_t dummyPid) : maps(getMaps(dummyPid)) {};
 };
 
 class Tracer {
 
 private:
-    pid_t dummyPid;
+    const std::string traceePath;
+    const int traceeArgc;
+    const char ** traceeArgs;
+    pid_t traceePid;
+    size_t mmapSize = 0;
 
     void tracerProcess() {
-#ifndef __APPLE__
-        //first make sure that ASLR is turned off - otherwise /proc/<pid>/maps won't make sense!!!
-        std::ifstream aslrSetting;
-        std::string aslrSettingPath = "/proc/sys/kernel/randomize_va_space";
-        aslrSetting.open(aslrSettingPath);
-        if (aslrSetting.is_open())
-        {
-            std::string line;
-            if (!aslrSetting.eof())
-            {
-                getline(aslrSetting, line);
-                bool no_aslr = (line.compare("0") == 0);
-                log("Is ASLR setting off: " + std::string(no_aslr ? "yes" : "no") + "\n");
-
-                if (!no_aslr) {
-                    tracerPanic("ASLR must be turned off! Read line: " + line + "\n");
-                }
-            }
-        }
-        else
-        {
-            tracerPanic("Could not open " + aslrSettingPath + "!\n");
-        }
-        aslrSetting.close();
-#endif
+        waitForChildToStop();
+        setupTracer();
+        kill(traceePid, SIGCONT); //allow child to continue
 
         const int msWait = 2500;
+        clrscr();
+
+        log("Tracee PID: " + std::to_string(traceePid) + "\n");
 
         while (1)
         {
-#ifdef CLEAR_SCR
-            std::system("clear");
-#endif
+            if (waitForSysCall()) break; //call
+            int syscall = ptrace(PTRACE_PEEKUSER, traceePid, sizeof(long) * ORIG_RAX);
+            uint64_t reqAddr = ptrace(PTRACE_PEEKUSER, traceePid, sizeof(long) * RDI);
+            uint64_t len = ptrace(PTRACE_PEEKUSER, traceePid, sizeof(long) * RSI);
 
-            log("Dummy PID: " + std::to_string(dummyPid) + "\n");
+            if (syscall == 9 || syscall == 12) {
+                if (waitForSysCall()) break; //return
+                std::cout << "\033[2;1H\033[0J";
+                printDynamicMemInfo(memMap(traceePid, traceePath));
 
-            //wreck
+                uint64_t sysret = ptrace(PTRACE_PEEKUSER, traceePid, sizeof(long) * RAX);
+                std::stringstream ss;
 
+                ss << "syscall: ";
 
-            // trace stuff
-            memMap mm(dummyPid);
-            log("Stack Top: 0x" + addrToHex(mm.maps.stackTop) + "\n");
-            log("Stack Bot: 0x" + addrToHex(mm.maps.stackBot) + "\n");
-            log("Heap Top: 0x" + addrToHex(mm.maps.heapTop) + "\n");
-            log("Heap Bot: 0x" + addrToHex(mm.maps.heapBot) + "\n");
-            log("uData Top: 0x" + addrToHex(mm.uDataTop) + "\n");
-            log("iData Top: 0x" + addrToHex(mm.iDataTop) + "\n");
-            log("Text Top: 0x" + addrToHex(mm.textTop) + "\n");
-            log("Text Bot: 0x" + addrToHex(mm.maps.textBot) + "\n");
+                if (syscall == 9)
+                {
+                    mmapSize += len;
+                    ss << "mmap(addr: " << longToHex(reqAddr) << ", len: " << longToHex(len) << ", ...)";
+                    ss << " = " << longToHex(sysret) << "\n";
+                }
+                else
+                {
+                    ss << "brk(addr: " << longToHex(reqAddr) << ")";
+                    ss << " = " + longToHex(sysret) + "\n";
+                }
 
-            if (waitpid(dummyPid, 0, WNOHANG))
-            {
-                log("Dummy has stopped...\n");
-                break;
+                log(ss.str());
             }
 
+            if (waitpid(traceePid, 0, WNOHANG | __WALL))
+            {
+                log("Tracee has stopped...\n");
+                break;
+            }
+        }
+
+        waitpid(traceePid, 0, __WALL); // wait for child to exit
+    }
+
+    void printDynamicMemInfo(const memMap &mm)
+    {
+        log("Uninitialised Data Size: " + std::to_string(mm.uDataSize) + " B\n");
+        log("Initialised Data Size: " + std::to_string(mm.iDataSize) + " B\n");
+        log("\tText Top: 0x" + longToHex(mm.textTop) + "\n");
+        log("\tText Bot: 0x" + longToHex(mm.textBot) + "\n");
+        log("Text Size: " + std::to_string(mm.textSize) + " B\n");
+
+        //dynamic numbers
+        log("\tStack Top: 0x" + longToHex(mm.stackTop) + "\n");
+        log("\tStack Bot: 0x" + longToHex(mm.stackBot) + "\n");
+        log("Stack Size: " + std::to_string((mm.stackTop - mm.stackBot) / 1024) + " KB\n");
+        log("\tHeap Top: 0x" + longToHex(mm.heapTop) + "\n");
+        log("\tHeap Bot: 0x" + longToHex(mm.heapBot) + "\n");
+        log("Heap Size: " + std::to_string((mm.heapTop - mm.heapBot) / 1024) + " KB\n");
+
+        //very dynamic numbers
+        log("MMAP'd region size: " + std::to_string(mmapSize / 1024) + " KB\n");
+    }
+
+    void waitForChildToStop()
+    {
+        const int msWait = 100;
+        int status;
+        while (1)
+        {
+            waitpid(traceePid, &status, WNOHANG | __WALL); //keep checking status until stopped
+            if (WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP)
+                break;
             usleep(msWait * 1000);
         }
 
-        waitpid(dummyPid, 0, 0); // wait for child to exit
+        log("Child process initial stop detected\n");
+    }
+
+    int waitForSysCall()
+    {
+        int status;
+        while (1)
+        {
+            ptrace(PTRACE_SYSCALL, traceePid, 0, 0);
+            waitpid(traceePid, &status, __WALL);
+            if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80)
+                return 0;
+            if (WIFEXITED(status))
+                return 1;
+        }
+    }
+
+    void setupTracer()
+    {
+        ptrace(PTRACE_SETOPTIONS, traceePid, 0, PTRACE_O_TRACESYSGOOD);
     }
 
     void startChildProcess()
     {
-        const std::string dummyPath = "./dummy.exe";
+        ptrace(PTRACE_TRACEME);
 
-        char* const* cmdArgs = NULL;
+        log("Tracee path: " + traceePath + "\n");
+        log("Tracee args (" + std::to_string(traceeArgc) + "): \n");
+        for (int i = 0; i < traceeArgc; i++)
+            log("\t" + std::string(traceeArgs[i]) + "\n");
+        log("Tracee PID: " + std::to_string(getpid()) + "\n");
 
-        execv(dummyPath.c_str(), cmdArgs);
+        //wait for enter to continue
+        log("Press enter to start tracing...\n");
+        std::cin.ignore();
 
-        tracerPanic("Child process exiting via parent!?!?\n");
+        kill(getpid(), SIGSTOP);
+
+        execv(traceePath.c_str(), (char* const*) traceeArgs);
+
+        log("Child process exited via parent\n");
     }
 
     void tracerPanic(std::string msg)
     {
-        kill(dummyPid, SIGKILL);
+        kill(traceePid, SIGKILL);
         panic(msg);
     }
 
 public:
+    Tracer(const int _argc, const char ** _traceePathAndArgs) :
+        traceePath(_traceePathAndArgs[0]),
+        traceeArgc(_argc),
+        traceeArgs(&(_traceePathAndArgs[0]))
+    {
+        if (!fileExists(traceePath))
+            panic("Tracee executable '" + traceePath + "' not found!\n");
+        else
+            log("Tracee executable '" + traceePath + "' found\n");
+    }
+
     void run()
     {
         log("-+-+-Tracer Starts-+-+-\n");
-        log("Starting dummy...\n");
+        log("Starting tracee...\n");
 
-        dummyPid = fork();
+        traceePid = fork();
 
-        if (dummyPid == 0) //this checks for child process
+        if (traceePid == 0) //this checks for child process
             startChildProcess();
         else
             tracerProcess();
@@ -196,27 +274,43 @@ public:
     }
 };
 
-void panic(std::string msg)
+void panic(const std::string &msg)
 {
     std::cerr << tracerHdr << "Fatal Error! " << msg;
     exit(EXIT_FAILURE);
 }
 
-void log(std::string msg)
+void log(const std::string &msg)
 {
     std::cout << tracerHdr << msg;
 }
 
-std::string addrToHex(addr a)
+std::string longToHex(const addr &a)
 {
     std::stringstream ss;
     ss << std::hex << a;
     return ss.str();
 }
 
-int main(int argc, char ** argv)
+bool fileExists(const std::string &file) {
+    struct stat buffer;
+    return (stat (file.c_str(), &buffer) == 0);
+}
+
+void clrscr()
 {
-    Tracer t;
+    std::cout << "\033[1J\033[1;1H";
+}
+
+int main(int argc, const char** argv)
+{
+    if (argc < 2)
+    {
+        log("Usage: tracer.exe <path of tracee> <tracee arguments ...>\n");
+        exit(EXIT_FAILURE);
+    }
+
+    Tracer t(argc - 1, &(argv[1]));
     t.run();
     return EXIT_SUCCESS;
 }
